@@ -1,0 +1,65 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="theme-color" content="#101218" />
+  <title>登录 · ForgeaX Game Task Board</title>
+  <style>
+    :root { color-scheme: dark; --bg:#0e1015; --panel:#171a22; --line:#303646; --text:#edf0f7; --muted:#949caf; --accent:#c8f36b; --red:#ff7b7b; }
+    * { box-sizing:border-box; }
+    body { min-height:100vh; margin:0; display:grid; place-items:center; padding:24px; background:radial-gradient(circle at 75% -10%,#2b3248 0,#0e1015 43%); color:var(--text); font:14px/1.5 Inter,ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; }
+    main { width:min(420px,100%); }
+    .brand { display:flex; gap:12px; align-items:center; margin:0 0 22px; }
+    .mark { width:38px; height:38px; border-radius:11px; background:var(--accent); color:#11151c; font-size:24px; font-weight:900; display:grid; place-items:center; box-shadow:0 0 28px #c8f36b3d; }
+    .brand strong,.brand span { display:block; }
+    .brand strong { font-size:16px; letter-spacing:.03em; }
+    .brand span,.eyebrow { color:var(--muted); font-size:10px; letter-spacing:.14em; text-transform:uppercase; }
+    .card { padding:32px; background:#171a22e8; border:1px solid var(--line); border-radius:16px; box-shadow:0 24px 90px #0008; }
+    h1 { margin:8px 0 8px; font-size:27px; letter-spacing:-.03em; }
+    .intro { margin:0 0 25px; color:var(--muted); }
+    form { display:grid; gap:16px; }
+    label { display:grid; gap:7px; color:#bcc3d0; font-size:12px; }
+    input { width:100%; border:1px solid var(--line); border-radius:9px; background:#11141b; color:var(--text); padding:12px 13px; font:inherit; outline:0; }
+    input:focus { border-color:var(--accent); box-shadow:0 0 0 3px #c8f36b18; }
+    button { margin-top:4px; border:1px solid var(--accent); border-radius:9px; background:var(--accent); color:#11151c; padding:11px 14px; font:inherit; font-weight:750; cursor:pointer; }
+    button:disabled { cursor:wait; opacity:.65; }
+    .error { min-height:21px; margin:13px 0 0; color:var(--red); font-size:12px; }
+    .note { margin:18px 2px 0; color:#747d90; font-size:11px; text-align:center; }
+  </style>
+</head>
+<body>
+  <main>
+    <div class="brand"><div class="mark">F</div><div><strong>ForgeaX</strong><span>Game Task Board</span></div></div>
+    <section class="card">
+      <div class="eyebrow">TEAM ACCESS</div>
+      <h1>登录游戏待办</h1>
+      <p class="intro">登录后即可查看、创建和在线认领带 <strong>#game</strong> 标签的任务。</p>
+      <form id="login-form">
+        <label>用户名<input id="username" name="username" autocomplete="username" required autofocus /></label>
+        <label>密码<input id="password" name="password" type="password" autocomplete="current-password" required /></label>
+        <button id="submit" type="submit">登录并进入待办</button>
+      </form>
+      <p class="error" id="error" role="alert" aria-live="polite"></p>
+    </section>
+    <p class="note">会话保存在仅服务端可读的 Cookie 中，有效期 12 小时。</p>
+  </main>
+  <script>
+    const form = document.querySelector('#login-form');
+    const submit = document.querySelector('#submit');
+    const error = document.querySelector('#error');
+    function destination() {
+      const next = new URLSearchParams(location.search).get('next') || '/?tag=game';
+      return next.startsWith('/') && !next.startsWith('//') ? next : '/?tag=game';
+    }
+    form.addEventListener('submit', async (event) => {
+      event.preventDefault(); error.textContent = ''; submit.disabled = true; submit.textContent = '正在登录…';
+      try {
+        const response = await fetch('/api/login', { method:'POST', headers:{ 'content-type':'application/json' }, body:JSON.stringify({ username:form.username.value, password:form.password.value }) });
+        if (!response.ok) { const data = await response.json().catch(() => ({})); throw new Error(data.error || '登录失败，请重试'); }
+        location.replace(destination());
+      } catch (reason) { error.textContent = reason instanceof Error ? reason.message : '登录失败，请重试'; submit.disabled = false; submit.textContent = '登录并进入待办'; }
+    });
+  </script>
+</body>
+</html>

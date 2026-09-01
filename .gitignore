@@ -1,0 +1,16 @@
+.DS_Store
+
+# Dependencies and generated output
+node_modules/
+pnpm-lock.yaml
+coverage/
+dist/
+*.tmp
+
+# Runtime state: never publish real tasks, logs, credentials, or sessions
+.env
+.env.*
+!.env.example
+data/*
+!data/.gitkeep
+*.log

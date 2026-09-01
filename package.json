@@ -1,0 +1,12 @@
+{
+  "name": "forgeax-task-board",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "bun server.ts",
+    "dev": "bun --watch server.ts",
+    "check": "bun build server.ts --target=bun --outfile=/tmp/forgeax-task-board-server-check.js && bun build public/app.js --target=browser --outfile=/tmp/forgeax-task-board-app-check.js",
+    "test": "bun test ./tests"
+  }
+}
