@@ -19,6 +19,7 @@ AI 应先读取无需认证的 `GET /.well-known/forgeax-task-board`，再按其
 | POST | `/api/tasks/:id/progress` | Agent 记录进度、阶段或阻塞原因 |
 | POST | `/api/tasks/:id/release` | Agent 释放任务 |
 | POST | `/api/tasks/:id/complete` | Agent 完成任务 |
+| GET | `/api/board` | 首页只读原子快照：`sourceAt`、`requiredTag`、授权实例内全部主/子任务，含最后进展报告；不修改领取或父单状态 |
 | GET | `/api/summary` | 看板摘要，支持用 `tag` 限定标签作用域 |
 | GET | `/api/tags` | 获取标签及任务数；可用 `projectSlug`、`topLevel=true` 过滤统计范围 |
 | GET | `/api/people` | 获取协作人员及任务数；可用 `tag`、`projectSlug`、`topLevel=true` 过滤统计范围 |
@@ -120,3 +121,11 @@ TASK_BOARD_HOST=0.0.0.0
 有验收标准的任务在 `acceptanceCriteria` 中登记 `{id, criterion, status, evidence}`。`id`稳定且唯一，`status`为 `pending`、`passed`、`failed`；`evidence`是实际验收结果或可核对资料，不能只写“实现了”。
 
 `POST /api/tasks`或`PATCH /api/tasks/:id`保存标准与结果。所有项必须为passed且有非空证据，才能经`complete`、PATCH done或新建done完成；否则409，原状态与历史不变，应按正常progress/blocked交个人分身判断。编辑界面使用同一检查。已登记项不可直接删除；改写标准会使该项恢复pending并清空旧证据。历史没有结构化标准的记录保留，不据此推断过去已经验收。读取/领取、实现/测试/上线、主管审阅分别留证，登记为passed也仍需主管核查引用证据。
+
+## 首页快照与筛选口径
+
+`GET /api/board` 与任务 API 使用同一认证和 `TASK_BOARD_REQUIRED_TAG` 边界。它返回当前授权实例内的全部主/子任务和服务端 `sourceAt`，不接受可选标签/人员/优先级筛选。浏览器在这一份快照上按各任务自己的标签、人员、优先级、搜索及日期条件筛选；子任务不会继承父任务的优先级或人员。标签、人员选项计数也包括子任务。`/api/tasks`、`/api/summary` 原有筛选含义保持不变。
+
+首页上方统计为当前筛选的任务数（主、子分别计数），全局行指当前实例授权范围，强制标签仍生效。工作流只列匹配主任务和匹配子任务的关联主任务；关联卡明确说明其本身不匹配筛选。主卡汇总为授权实例内的全部子单，并注明匹配数量；不据子单状态改写父单。当前领取区按筛选显示有效 `claimed` 子/主单，筛选外有效领取单独计数，可通过普通按钮清除筛选查看。关联父单与原子单链接读取原 ID；选中筛选不是访问权限。
+
+有效领取要求 `status=claimed` 且租约未过期；租约只说明领取权，不说明执行进程实时在跑。`latestReport` 同时出现在任务列表、详情及子任务摘要中，仅取本次领取以来的 progress/blocked/completed/released/lease_expired 事件，不把 renew 或旧领取轮的百分比当成新进展。没有本次报告时明确显示未知，不生成平均百分比。来源读取失败时首页隐藏旧任务、统计和详情，标示不可用及上次成功来源时间；刷新成功后恢复。

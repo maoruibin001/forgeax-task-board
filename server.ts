@@ -125,7 +125,23 @@ function record(t: Task, type: TaskEvent['type'], actor: string, note?: string, 
 function touch(t: Task) { t.updatedAt = now(); persist(); broadcast({ type: 'task.updated', task: t }); }
 function expireLeases() { const time = Date.now(); let changed = false; for (const t of tasks) if (t.status === 'claimed' && t.claim && Date.parse(t.claim.leaseUntil) <= time) { const agentId = t.claim.agentId; t.status = 'ready'; t.claim = null; t.assignee = null; record(t, 'lease_expired', agentId, 'Claim lease expired; task returned to ready'); t.updatedAt = now(); changed = true; broadcast({ type: 'task.lease_expired', taskId: t.id }); } if (changed) persist(); }
 function find(id: string) { return tasks.find((t) => t.id === id); }
-function taskSummary(t: Task) { return { id: t.id, title: t.title, status: t.status, priority: t.priority, progress: t.progress, deadline: t.deadline, tags: t.tags, people: t.people, projectSlug: t.projectSlug, parentTaskId: t.parentTaskId, updatedAt: t.updatedAt, assignee: t.assignee, claim: t.claim }; }
+function taskSummary(t: Task) { return { latestReport: taskReport(t), id: t.id, title: t.title, status: t.status, priority: t.priority, progress: t.progress, deadline: t.deadline, tags: t.tags, people: t.people, projectSlug: t.projectSlug, parentTaskId: t.parentTaskId, updatedAt: t.updatedAt, assignee: t.assignee, claim: t.claim }; }
+function taskReport(t: Task) {
+  const claimIndex = t.claim ? t.history.findLastIndex(event => event.type === 'claimed'
+    && event.actor === t.claim!.agentId && event.at === t.claim!.claimedAt) : -1;
+  // Event order disambiguates progress/release/re-claim within the same millisecond.
+  const history = claimIndex >= 0 ? t.history.slice(claimIndex + 1) : t.history;
+  const report = [...history].reverse().find(event =>
+    ['progress', 'blocked', 'completed', 'released', 'lease_expired'].includes(event.type)
+    && (claimIndex >= 0 || !t.claim || Date.parse(event.at) > Date.parse(t.claim.claimedAt)));
+  return report ?? null;
+}
+// A read-only, single-source snapshot for the homepage. No parent lifecycle is changed.
+function boardTask(t: Task) {
+  return { ...taskSummary(t), description: t.description, resources: t.resources,
+    subtaskCount: tasks.filter(child => child.parentTaskId === t.id && hasTag(child, REQUIRED_TAG)).length,
+    blockedReason: t.blockedReason };
+}
 function mainTaskOf(t: Task) { let current = t; const seen = new Set<string>(); while (current.parentTaskId && !seen.has(current.id)) { seen.add(current.id); const parent = find(current.parentTaskId); if (!parent) break; current = parent; } return current; }
 function parentError(taskId: string | null, parentTaskId: string | null, tag = '') {
   if (!parentTaskId) return null;
@@ -138,7 +154,7 @@ function parentError(taskId: string | null, parentTaskId: string | null, tag = '
 }
 function serializeTask(t: Task, detail = false, tag = '') {
   const children = tasks.filter((child) => child.parentTaskId === t.id && hasTag(child, tag));
-  const base = { ...t, isMainTask: !t.parentTaskId, subtaskCount: children.length };
+  const base = { ...t, latestReport: taskReport(t), isMainTask: !t.parentTaskId, subtaskCount: children.length };
   if (!detail) return base;
   const parentCandidate = t.parentTaskId ? find(t.parentTaskId) : null;
   const parent = parentCandidate && hasTag(parentCandidate, tag) ? parentCandidate : null;
@@ -216,6 +232,8 @@ function agentGuide(url: URL) {
     authentication: { api: credentialsConfigured() ? 'HTTP Basic' : 'none', browser: credentialsConfigured() ? 'form login + HttpOnly session cookie' : 'none', credentials: 'obtain out of band from the board owner' },
     discovery: `${origin}/.well-known/forgeax-task-board`, documentation: `${origin}/agent-guide.md`, machineGuide: `${origin}/api/agent-guide`,
     taskQueries: {
+      boardSnapshot: '/api/board',
+      boardSnapshotSemantics: 'Atomic authorized-instance snapshot with sourceAt and main/child tasks; browser filters apply to each task. A valid claim is a lease, not proof of live execution.',
       readyMainTasks: '/api/tasks?status=ready&topLevel=true',
       byPerson: '/api/tasks?status=ready&topLevel=true&person=<name>',
       people: '/api/people?topLevel=true',
@@ -245,6 +263,10 @@ async function handler(req: Request): Promise<Response> {
   if (url.pathname === '/api/events') {
     const stream = new ReadableStream({ start(controller) { clients.add(controller); controller.enqueue(`data: ${JSON.stringify({ type: 'connected' })}\n\n`); }, cancel(controller) { clients.delete(controller); } });
     return new Response(stream, { headers: { 'content-type': 'text/event-stream', 'cache-control': 'no-cache', connection: 'keep-alive' } });
+  }
+  if (url.pathname === '/api/board' && req.method === 'GET') {
+    return json({ sourceAt: now(), requiredTag: REQUIRED_TAG || null,
+      tasks: tasks.filter(task => hasTag(task, REQUIRED_TAG)).sort(compareTasks).map(boardTask) });
   }
   if (url.pathname === '/api/summary') {
     const topLevelOnly = url.searchParams.get('topLevel') === 'true'; const tag = scopedTag(url); const person = scopedPerson(url);

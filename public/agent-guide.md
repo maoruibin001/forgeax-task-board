@@ -103,3 +103,9 @@ curl -fsS --user "$TASK_BOARD_USER:$TASK_BOARD_PASSWORD" \
 有验收标准的任务在 `acceptanceCriteria` 中登记 `{id, criterion, status, evidence}`。`id`稳定且唯一，`status`为 `pending`、`passed`、`failed`；`evidence`是实际验收结果或可核对资料，不能只写“实现了”。
 
 `POST /api/tasks`或`PATCH /api/tasks/:id`保存标准与结果。所有项必须为passed且有非空证据，才能经`complete`、PATCH done或新建done完成；否则409，原状态与历史不变，应按正常progress/blocked交个人分身判断。编辑界面使用同一检查。已登记项不可直接删除；改写标准会使该项恢复pending并清空旧证据。历史没有结构化标准的记录保留，不据此推断过去已经验收。读取/领取、实现/测试/上线、主管审阅分别留证，登记为passed也仍需主管核查引用证据。
+
+## 首页主单、子单与当前领取
+
+首页通过已认证的 `GET /api/board` 读取单份 `sourceAt` 快照；强制标签限定的实例不会暴露其他任务。快照用于页面本地筛选，不接受可选查询筛选。原任务查询仍用 `/api/tasks`。
+
+上方数字按当前筛选统计主/子任务；全局数字指实例授权范围。工作流保留父任务自身状态，并汇总其授权范围内子单；当前领取区直接进入原子单。优先级/人员/标签按各任务自身字段匹配。有效 claim 与真实进展报告分开显示，续租不构成执行或进展证据。读取失败显示不可用，不能把旧成功缓存当成当前状态。

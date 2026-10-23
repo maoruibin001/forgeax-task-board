@@ -66,6 +66,7 @@ test('cloud policy requires Basic authentication', async () => {
   const protectedMachineGuide = await fetch(`${base}/api/agent-guide`);
   expect(protectedMachineGuide.status).toBe(401);
 
+  expect((await fetch(`${base}/api/board`)).status).toBe(401);
   const anonymous = await fetch(`${base}/api/summary`);
   expect(anonymous.status).toBe(401);
   expect(anonymous.headers.get('www-authenticate')).toContain('Basic');
@@ -129,6 +130,11 @@ test('cloud policy redirects the root and enforces game on every API request', a
 
   const list = await request('/api/tasks?tag=ops');
   expect(list.data.map((task: { title: string }) => task.title)).toEqual(['cloud-game-task']);
+
+  const snapshot = await request('/api/board?tag=ops');
+  expect(snapshot.data.requiredTag).toBe('game');
+  expect(snapshot.data.tasks.map((task: { title: string }) => task.title)).toEqual(['cloud-game-task']);
+  expect(snapshot.response.headers.get('cache-control')).toBe('no-store');
 
   const tags = await request('/api/tags');
   expect(tags.data).toContainEqual({ tag: 'game', count: 1 });
