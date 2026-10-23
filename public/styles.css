@@ -19,3 +19,8 @@
 @media(max-width:1300px){.board{grid-template-columns:repeat(3,minmax(0,1fr))}}
 @media(max-width:1000px){.board{grid-template-columns:repeat(2,minmax(0,1fr))}}
 @media(max-width:650px){.board{grid-template-columns:minmax(0,1fr)}.top-actions .primary{font-size:12px;padding:9px}.main{width:100%}.toolbar #priority-filter{flex:1}.claims-panel .board-head{align-items:flex-start}.claims-panel h2{white-space:nowrap}.topbar{gap:10px}.top-actions{flex-shrink:0}.stats{margin-top:24px}.scope-summary{font-size:11px}}
+
+/* Long original task/resource URLs must not impose a min-content grid width. */
+.detail-main,.detail-side,.detail-card,.resource-group,.resource-item>div,.detail-head>div{min-width:0}
+.detail-card,.detail-head .eyebrow{overflow-wrap:anywhere}
+.task-relation,.section-heading{flex-wrap:wrap}
