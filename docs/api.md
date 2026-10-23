@@ -113,3 +113,10 @@ TASK_BOARD_HOST=0.0.0.0
 任务响应中的 `history` 是追踪记录；每次 claim、renew、progress、blocked、release、complete 都会追加事件。Agent 不应只在最终完成时更新任务。
 
 领取任务时必须传 `agentId`、`sessionId`、`process` 和 `cwd`：`sessionId` 区分 Agent 会话，`process` 记录领取任务的进程/宿主，`cwd` 记录当前工作目录。它们会写入 `claim` 与 `assignee`，并显示在任务卡上。
+
+
+## 逐项验收与完成门槛
+
+有验收标准的任务在 `acceptanceCriteria` 中登记 `{id, criterion, status, evidence}`。`id`稳定且唯一，`status`为 `pending`、`passed`、`failed`；`evidence`是实际验收结果或可核对资料，不能只写“实现了”。
+
+`POST /api/tasks`或`PATCH /api/tasks/:id`保存标准与结果。所有项必须为passed且有非空证据，才能经`complete`、PATCH done或新建done完成；否则409，原状态与历史不变，应按正常progress/blocked交个人分身判断。编辑界面使用同一检查。已登记项不可直接删除；改写标准会使该项恢复pending并清空旧证据。历史没有结构化标准的记录保留，不据此推断过去已经验收。读取/领取、实现/测试/上线、主管审阅分别留证，登记为passed也仍需主管核查引用证据。

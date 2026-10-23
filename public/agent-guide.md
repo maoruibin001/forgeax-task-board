@@ -96,3 +96,10 @@ curl -fsS --user "$TASK_BOARD_USER:$TASK_BOARD_PASSWORD" \
 如果服务端配置了强制标签（当前游戏实例为 `game`），即使请求没有填写该标签，服务端也会自动加入并保留它。
 
 浏览器网页用于人工操作；AI 应优先使用 JSON API，并把认证信息从看板负责人处线下获取。
+
+
+## 逐项验收与完成门槛
+
+有验收标准的任务在 `acceptanceCriteria` 中登记 `{id, criterion, status, evidence}`。`id`稳定且唯一，`status`为 `pending`、`passed`、`failed`；`evidence`是实际验收结果或可核对资料，不能只写“实现了”。
+
+`POST /api/tasks`或`PATCH /api/tasks/:id`保存标准与结果。所有项必须为passed且有非空证据，才能经`complete`、PATCH done或新建done完成；否则409，原状态与历史不变，应按正常progress/blocked交个人分身判断。编辑界面使用同一检查。已登记项不可直接删除；改写标准会使该项恢复pending并清空旧证据。历史没有结构化标准的记录保留，不据此推断过去已经验收。读取/领取、实现/测试/上线、主管审阅分别留证，登记为passed也仍需主管核查引用证据。
