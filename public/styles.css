@@ -24,3 +24,17 @@
 .detail-main,.detail-side,.detail-card,.resource-group,.resource-item>div,.detail-head>div{min-width:0}
 .detail-card,.detail-head .eyebrow{overflow-wrap:anywhere}
 .task-relation,.section-heading{flex-wrap:wrap}
+
+/* Ready children are an execution queue, separate from direction containers. */
+.ready-panel{border:1px solid #c8f36b55;background:#c8f36b05;border-radius:12px;padding:18px;margin-bottom:28px;min-width:0}
+.ready-panel .board-head{align-items:flex-start;margin-bottom:10px;flex-wrap:wrap}
+#ready-title{font-size:21px}#ready-count{display:inline-block;background:var(--accent);color:var(--bg);border-radius:6px;padding:0 8px;margin-left:5px;font-size:18px}
+#ready-subtitle{display:block;max-width:700px;overflow-wrap:anywhere}.ready-caution{font-size:12px;color:var(--muted);margin:0 0 14px}
+.ready-list{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,280px),1fr));gap:12px}
+.ready-card{min-width:0;padding:14px;border:1px solid var(--line);border-left:3px solid var(--accent);border-radius:8px;background:var(--panel);overflow-wrap:anywhere}
+.ready-card .task-top{gap:10px}.ready-card .claim-title{min-width:0}.ready-card .priority{flex-shrink:0}.ready-detail{display:block;margin-top:12px;font-size:12px}
+.ready-description{margin-top:12px;font-size:11px;color:var(--muted)}.ready-description summary{cursor:pointer;color:var(--blue)}.ready-description p{white-space:pre-wrap;max-height:240px;overflow:auto;overscroll-behavior:contain}
+.ready-no-description{display:block;color:var(--muted);margin-top:10px}.ready-conflict{display:grid;gap:6px;background:#ff707012;border:1px solid #ff707055;border-radius:6px;padding:10px;margin-top:12px;color:var(--red);font-size:12px;white-space:pre-wrap}
+.direction-note{font-size:11px;color:var(--blue);background:#75b9ff0c;border-radius:5px;padding:8px;margin:10px 0}
+#toggle-ready{margin-top:14px;max-width:100%;white-space:normal}.ready-card button:focus-visible,.ready-description summary:focus-visible{outline:2px solid var(--accent);outline-offset:3px}
+@media(max-width:650px){.ready-panel{padding:12px}.ready-panel .board-head{display:block}.ready-panel .board-head>button{margin-top:10px;white-space:normal}#ready-title{font-size:19px}.ready-list{grid-template-columns:minmax(0,1fr)}}
