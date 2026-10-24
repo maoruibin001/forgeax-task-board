@@ -1,4 +1,5 @@
 import { parseAcceptance, completionError, type AcceptanceCriterion } from './acceptance';
+import { verificationBasis, verificationView, verificationError, type Verification } from './verification';
 import { join, dirname, resolve } from 'node:path';
 import { chmod, mkdir } from 'node:fs/promises';
 import { createHmac, timingSafeEqual } from 'node:crypto';
@@ -20,13 +21,14 @@ type Status = 'inbox' | 'ready' | 'claimed' | 'blocked' | 'done' | 'cancelled';
 type Priority = 'urgent' | 'high' | 'normal' | 'low';
 type ResourceKind = 'requirement' | 'bug' | 'acceptance_doc' | 'acceptance_artifact';
 type TaskResource = { id: string; kind: ResourceKind; title: string; url: string; note: string; addedAt: string; addedBy: string };
-type TaskEvent = { id: string; type: 'created' | 'claimed' | 'progress' | 'renewed' | 'released' | 'blocked' | 'completed' | 'updated' | 'lease_expired'; at: string; actor: string; note?: string; progress?: number };
+type TaskEvent = { id: string; type: 'created' | 'claimed' | 'progress' | 'renewed' | 'released' | 'blocked' | 'completed' | 'updated' | 'lease_expired' | 'verification_recorded' | 'verification_invalidated'; verification?: Verification; at: string; actor: string; note?: string; progress?: number };
 type Task = {
   id: string; title: string; description: string; status: Status; priority: Priority;
   createdAt: string; updatedAt: string; deadline: string | null; tags: string[]; people: string[];
   projectSlug: string; assignee: { kind: 'human' | 'agent'; id: string; name?: string; process?: string; cwd?: string } | null;
   claim: { agentId: string; sessionId?: string; process?: string; cwd?: string; claimedAt: string; leaseUntil: string } | null;
   parentTaskId: string | null; resources: TaskResource[]; acceptanceCriteria: AcceptanceCriterion[];
+  test?: boolean; verification?: Verification;
   completedAt: string | null; completedBy: string | null; result: string; blockedReason: string; progress: number; history: TaskEvent[];
 };
 
@@ -92,7 +94,7 @@ function normalizeResources(value: unknown): TaskResource[] {
 }
 function makeTask(input: Partial<Task> & Pick<Task, 'title'>): Task {
   const t = now();
-  const task = { id: crypto.randomUUID(), title: input.title, description: input.description ?? '', status: input.status ?? 'ready', priority: input.priority ?? 'normal', createdAt: input.createdAt ?? t, updatedAt: t, deadline: input.deadline ?? null, tags: normalizeTags(input.tags), people: normalizePeople(input.people), projectSlug: input.projectSlug ?? '', assignee: input.assignee ?? null, claim: input.claim ?? null, parentTaskId: normalizeParentId(input.parentTaskId), resources: normalizeResources(input.resources), acceptanceCriteria: parseAcceptance(input.acceptanceCriteria ?? []).criteria, completedAt: null, completedBy: null, result: input.result ?? '', blockedReason: '', progress: input.progress ?? 0, history: input.history ?? [] } as Task;
+  const task = { test: input.test === true, id: crypto.randomUUID(), title: input.title, description: input.description ?? '', status: input.status ?? 'ready', priority: input.priority ?? 'normal', createdAt: input.createdAt ?? t, updatedAt: t, deadline: input.deadline ?? null, tags: normalizeTags(input.tags), people: normalizePeople(input.people), projectSlug: input.projectSlug ?? '', assignee: input.assignee ?? null, claim: input.claim ?? null, parentTaskId: normalizeParentId(input.parentTaskId), resources: normalizeResources(input.resources), acceptanceCriteria: parseAcceptance(input.acceptanceCriteria ?? []).criteria, completedAt: null, completedBy: null, result: input.result ?? '', blockedReason: '', progress: input.progress ?? 0, history: input.history ?? [] } as Task;
   task.history.push({ id: crypto.randomUUID(), type: 'created', at: t, actor: 'human' });
   return task;
 }
@@ -122,10 +124,18 @@ function persist() { clearTimeout(saveTimer); saveTimer = setTimeout(() => void 
 async function flushPendingSave() { clearTimeout(saveTimer); await enqueueSave(); }
 function broadcast(event: unknown) { const data = `data: ${JSON.stringify(event)}\n\n`; for (const c of clients) { try { c.enqueue(data); } catch { clients.delete(c); } } }
 function record(t: Task, type: TaskEvent['type'], actor: string, note?: string, progress?: number) { t.history ??= []; t.history.push({ id: crypto.randomUUID(), type, at: now(), actor, ...(note ? { note } : {}), ...(progress === undefined ? {} : { progress }) }); }
-function touch(t: Task) { t.updatedAt = now(); persist(); broadcast({ type: 'task.updated', task: t }); }
+function touch(t: Task) {
+  const v = t.verification;
+  if (v && !['pending','invalidated'].includes(v.status) && (v.basis !== verificationBasis(t) || t.status !== 'done')) {
+    t.verification = {...v, status:'invalidated', invalidatedAt:now(), reason:'交付结果、验收依据或完成状态已变化，需重新验证'};
+    record(t, 'verification_invalidated', t.history.at(-1)?.actor ?? 'system', t.verification.reason);
+    t.history.at(-1)!.verification = {...t.verification};
+  }
+  t.updatedAt = now(); persist(); broadcast({ type:'task.updated', task:t });
+}
 function expireLeases() { const time = Date.now(); let changed = false; for (const t of tasks) if (t.status === 'claimed' && t.claim && Date.parse(t.claim.leaseUntil) <= time) { const agentId = t.claim.agentId; t.status = 'ready'; t.claim = null; t.assignee = null; record(t, 'lease_expired', agentId, 'Claim lease expired; task returned to ready'); t.updatedAt = now(); changed = true; broadcast({ type: 'task.lease_expired', taskId: t.id }); } if (changed) persist(); }
 function find(id: string) { return tasks.find((t) => t.id === id); }
-function taskSummary(t: Task) { return { latestReport: taskReport(t), id: t.id, title: t.title, status: t.status, priority: t.priority, progress: t.progress, deadline: t.deadline, tags: t.tags, people: t.people, projectSlug: t.projectSlug, parentTaskId: t.parentTaskId, updatedAt: t.updatedAt, assignee: t.assignee, claim: t.claim }; }
+function taskSummary(t: Task) { return { test: t.test === true, verification: verificationView(t), latestReport: taskReport(t), id: t.id, title: t.title, status: t.status, priority: t.priority, progress: t.progress, deadline: t.deadline, tags: t.tags, people: t.people, projectSlug: t.projectSlug, parentTaskId: t.parentTaskId, updatedAt: t.updatedAt, assignee: t.assignee, claim: t.claim }; }
 function taskReport(t: Task) {
   const claimIndex = t.claim ? t.history.findLastIndex(event => event.type === 'claimed'
     && event.actor === t.claim!.agentId && event.at === t.claim!.claimedAt) : -1;
@@ -154,7 +164,7 @@ function parentError(taskId: string | null, parentTaskId: string | null, tag = '
 }
 function serializeTask(t: Task, detail = false, tag = '') {
   const children = tasks.filter((child) => child.parentTaskId === t.id && hasTag(child, tag));
-  const base = { ...t, latestReport: taskReport(t), isMainTask: !t.parentTaskId, subtaskCount: children.length };
+  const base = { ...t, verification: verificationView(t), verificationBasis: verificationBasis(t), latestReport: taskReport(t), isMainTask: !t.parentTaskId, subtaskCount: children.length };
   if (!detail) return base;
   const parentCandidate = t.parentTaskId ? find(t.parentTaskId) : null;
   const parent = parentCandidate && hasTag(parentCandidate, tag) ? parentCandidate : null;
@@ -240,6 +250,7 @@ function agentGuide(url: URL) {
       detail: '/api/tasks/<taskId>',
     },
     claim: { method: 'POST', path: '/api/tasks/<taskId>/claim', requiredBody: ['agentId', 'sessionId', 'process', 'cwd'], leaseMinutes: LEASE_MS / 60_000 },
+    verification: { path: '/api/tasks/<taskId>/verification', method: 'POST', requiredBody: ['status','reviewer','evidence','expectedBasis'], rule: '独立验证阶段，保留原status；仅done且逐项通过、有交付结果及验证证据才能verified。旧done为独立验证阶段未登记pending，保留历史验收事实；交付/标准变化使验证失效。reviewer为署名，不是认证身份。' },
     completion: {criteria:'acceptanceCriteria[{id,criterion,status:pending|passed|failed,evidence}]', rule:'有标准时逐项实际验收通过并填写证据才完成；未验收/未通过标记blocked，交个人分身判断。complete与PATCH/新建done使用同一门槛；改变标准使原证据失效。'},
     lifecycle: [
       'Discover and list ready tasks; GET /api/tasks returns a JSON array.',
@@ -291,12 +302,21 @@ async function handler(req: Request): Promise<Response> {
     return json(result.map((task) => serializeTask(task, false, tag)));
   }
   if (url.pathname === '/api/tasks/recent' && req.method === 'GET') { const limit = Math.min(Math.max(Number(url.searchParams.get('limit') ?? 3) || 3, 1), 10); const tag = scopedTag(url); const person = scopedPerson(url); return json(tasks.filter((task) => !task.parentTaskId && hasTag(task, tag) && hasPerson(task, person)).sort((a, b) => Date.parse(b.updatedAt) - Date.parse(a.updatedAt)).slice(0, limit).map(taskSummary)); }
-  if (url.pathname === '/api/tasks' && req.method === 'POST') { const input = await body(req); if (!String(input.title ?? '').trim()) return json({ error: 'title is required' }, 400); const tag = scopedTag(url); const parentTaskId = normalizeParentId(input.parentTaskId); const error = parentError(null, parentTaskId, tag); if (error) return json({ error }, 400); const acceptance = parseAcceptance(input.acceptanceCriteria ?? []); if (acceptance.error) return json({error:acceptance.error},400); if(input.status === 'done') { const error=completionError(acceptance.criteria); if(error)return json({error},409); if(acceptance.criteria.length && !String(input.result??'').trim())return json({error:'请填写验收后的实际交付结果'},409); } const task = makeTask({ ...input, acceptanceCriteria:acceptance.criteria, tags: ensureTag(input.tags, tag), parentTaskId }); tasks.unshift(task); touch(task); return json(serializeTask(task, true, tag), 201); }
+  if (url.pathname === '/api/tasks' && req.method === 'POST') { const input = await body(req); if ('verification' in input) return json({error:'请通过独立verification入口记录验证，不可直接写入验证状态'},400); if (!String(input.title ?? '').trim()) return json({ error: 'title is required' }, 400); const tag = scopedTag(url); const parentTaskId = normalizeParentId(input.parentTaskId); const error = parentError(null, parentTaskId, tag); if (error) return json({ error }, 400); const acceptance = parseAcceptance(input.acceptanceCriteria ?? []); if (acceptance.error) return json({error:acceptance.error},400); if(input.status === 'done') { const error=completionError(acceptance.criteria); if(error)return json({error},409); if(acceptance.criteria.length && !String(input.result??'').trim())return json({error:'请填写验收后的实际交付结果'},409); } const task = makeTask({ ...input, acceptanceCriteria:acceptance.criteria, tags: ensureTag(input.tags, tag), parentTaskId }); tasks.unshift(task); touch(task); return json(serializeTask(task, true, tag), 201); }
   if (!url.pathname.startsWith('/api/tasks/')) return json({ name: 'ForgeaX Task Board', timezone: TZ });
   const tag = scopedTag(url); const person = scopedPerson(url); const id = pathId(url); const task = find(id); if (!task || !hasTag(task, tag) || !hasPerson(task, person)) return json({ error: 'task not found' }, 404);
   if (req.method === 'GET') return json(serializeTask(task, true, tag));
-  if (req.method === 'DELETE' && !url.pathname.includes('/resources/')) { tasks = tasks.filter((t) => t.id !== id && t.parentTaskId !== id); persist(); broadcast({ type: 'task.deleted', taskId: id }); return json({ ok: true }); }
+  if (req.method === 'DELETE' && url.pathname.split('/').length === 4) { tasks = tasks.filter((t) => t.id !== id && t.parentTaskId !== id); persist(); broadcast({ type: 'task.deleted', taskId: id }); return json({ ok: true }); }
   const action = url.pathname.split('/')[4]; const input = await body(req);
+  if ('verification' in input) return json({error:'请通过独立verification入口记录验证，不可直接写入验证状态'},400);
+  if (action === 'verification' && req.method === 'POST') {
+    const error = verificationError(task, input);
+    if (error) return json({error},409);
+    task.verification = { status:input.status, reviewer:input.reviewer.trim(), at:now(), evidence:input.evidence.trim(), basis:verificationBasis(task) };
+    record(task, 'verification_recorded', task.verification.reviewer, task.verification.evidence);
+    task.history.at(-1)!.verification = {...task.verification};
+    touch(task); return json(serializeTask(task, true, tag));
+  }
   const acceptance = parseAcceptance('acceptanceCriteria' in input ? input.acceptanceCriteria : task.acceptanceCriteria);
   if(acceptance.error)return json({error:acceptance.error},400);
   if ('acceptanceCriteria' in input && task.acceptanceCriteria.some(old => !acceptance.criteria.some(next => next.id === old.id))) return json({error:'已登记的验收项不可移除；标准变更请保留原项并重新验收'},409);
@@ -310,7 +330,28 @@ async function handler(req: Request): Promise<Response> {
   if (action === 'complete') { if (task.claim && task.claim.agentId !== input.agentId) return json({ error: 'only the current agent can complete' }, 403); task.status = 'done'; task.progress = 100; task.completedAt = now(); task.completedBy = String(input.agentId ?? 'human'); task.result = String(input.result ?? ''); record(task, 'completed', task.completedBy, task.result, 100); task.claim = null; touch(task); return json(serializeTask(task, true, tag)); }
   if (action === 'resources' && req.method === 'POST') { const resource = normalizeResources([{ ...input, addedBy: input.addedBy ?? input.actorId ?? 'human' }])[0]; if (!resource) return json({ error: 'resource requires kind, title and url' }, 400); task.resources.push(resource); record(task, 'updated', String(input.actorId ?? resource.addedBy), `added resource: ${resource.title}`); touch(task); return json(serializeTask(task, true, tag), 201); }
   if (action === 'resources' && req.method === 'DELETE') { const resourceId = decodeURIComponent(url.pathname.split('/')[5] ?? ''); const before = task.resources.length; task.resources = task.resources.filter((resource) => resource.id !== resourceId); if (task.resources.length === before) return json({ error: 'resource not found' }, 404); record(task, 'updated', String(input.actorId ?? 'human'), `removed resource: ${resourceId}`); touch(task); return json(serializeTask(task, true, tag)); }
-  if (req.method === 'PATCH') { const parentTaskId = 'parentTaskId' in input ? normalizeParentId(input.parentTaskId) : task.parentTaskId; const parentErrorMessage = parentError(task.id, parentTaskId, tag); if (parentErrorMessage) return json({ error: parentErrorMessage }, 400); const allowed = ['title', 'description', 'status', 'priority', 'deadline', 'projectSlug', 'blockedReason', 'assignee', 'progress', 'result']; for (const key of allowed) if (key in input) (task as any)[key] = input[key]; if ('tags' in input) task.tags = ensureTag(input.tags, tag); else if (tag) task.tags = ensureTag(task.tags, tag); if ('people' in input) task.people = normalizePeople(input.people); if ('parentTaskId' in input) task.parentTaskId = parentTaskId; if ('resources' in input) { const resources = normalizeResources(input.resources); if (Array.isArray(input.resources) && resources.length !== input.resources.length) return json({ error: 'each resource requires kind, title and url' }, 400); task.resources = resources; } task.acceptanceCriteria=acceptance.criteria; if (task.status !== 'claimed') task.claim = null; record(task, 'updated', input.actorId ?? 'human', input.note); if (task.status === 'done' && !task.completedAt) task.completedAt = now(); touch(task); return json(serializeTask(task, true, tag)); }
+  if (req.method === 'PATCH' && !action) {
+    const parentTaskId = 'parentTaskId' in input ? normalizeParentId(input.parentTaskId) : task.parentTaskId;
+    const parentErrorMessage = parentError(task.id, parentTaskId, tag);
+    if (parentErrorMessage) return json({ error: parentErrorMessage }, 400);
+    const resources = 'resources' in input ? normalizeResources(input.resources) : task.resources;
+    if ('resources' in input && (!Array.isArray(input.resources) || resources.length !== input.resources.length)) return json({ error:'each resource requires kind, title and url' },400);
+    const beforeBasis = verificationBasis(task); const wasDone = task.status === 'done';
+    const allowed = ['title', 'description', 'status', 'priority', 'deadline', 'projectSlug', 'blockedReason', 'assignee', 'progress', 'result'];
+    for (const key of allowed) if (key in input) (task as any)[key] = input[key];
+    if ('tags' in input) task.tags = ensureTag(input.tags, tag); else if (tag) task.tags = ensureTag(task.tags, tag);
+    if ('people' in input) task.people = normalizePeople(input.people);
+    if ('parentTaskId' in input) task.parentTaskId = parentTaskId;
+    task.resources = resources; task.acceptanceCriteria = acceptance.criteria;
+    // A done row cannot retain completion after its acceptance is changed to pending/failed.
+    if (task.status === 'done' && beforeBasis !== verificationBasis(task) && completionError(task.acceptanceCriteria)) {
+      task.status = 'blocked'; task.blockedReason = '验收标准或结果已变化，需重新验收并完成任务';
+    }
+    if (task.status !== 'claimed') task.claim = null;
+    record(task, 'updated', input.actorId ?? 'human', input.note);
+    if (task.status === 'done' && (!wasDone || !task.completedAt)) { task.completedAt = now(); task.completedBy = String(input.actorId ?? 'human'); task.progress = 100; }
+    touch(task); return json(serializeTask(task, true, tag));
+  }
   return json({ error: 'unsupported operation' }, 405);
 }
 

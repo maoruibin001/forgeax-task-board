@@ -1,4 +1,4 @@
-import { readyChildQueue, hasReadyConflict, directionNote } from './board-selectors.js';
+import { readyChildQueue, hasReadyConflict, directionNote, isTestTask, isArchivedTask, validClaim, verifiedTask, metricMatch, taskMetrics } from './board-selectors.js';
 
 const acceptanceLabels = {pending:'待验收',passed:'已通过',failed:'未通过'};
 function acceptanceEditor(items=[]) { $('#acceptance-items').innerHTML=''; items.forEach(appendAcceptance); }
@@ -7,7 +7,7 @@ function acceptanceInput() { return [...document.querySelectorAll('[data-accepta
 function acceptancePanel(task) { return task.acceptanceCriteria?.length?`<section class="detail-card"><div class="section-kicker">逐项验收 · 通过才完成</div>${task.acceptanceCriteria.map(item=>`<p><strong>${esc(acceptanceLabels[item.status]||'待核对')} · ${esc(item.criterion)}</strong><br>${esc(item.evidence||'尚无实际验收证据')}</p>`).join('')}<small>未验收或未通过时先标记受阻，交个人分身核查。记录通过仍需核对引用证据。</small></section>`:''; }
 const initialTag = new URLSearchParams(location.search).get('tag')?.trim().toLowerCase() || '';
 const initialPerson = new URLSearchParams(location.search).get('person')?.trim().toLowerCase() || '';
-const state = { tasks: [], recent: [], tags: [], people: [], currentTask: null, filter: initialTag ? 'all' : 'p0p1', view: 'board', scopeTag: initialTag, scopePerson: initialPerson, sourceAt: null, available: false, error: '', requiredTag: '', readyExpanded: false };
+const state = { tasks: [], recent: [], tags: [], people: [], currentTask: null, filter: initialTag ? 'all' : 'p0p1', view: 'board', scopeTag: initialTag, scopePerson: initialPerson, sourceAt: null, available: false, error: '', requiredTag: '', readyExpanded: false, includeTests: false, includeArchives: false, metric: '' };
 const $ = (s) => document.querySelector(s);
 const esc = (v) => String(v ?? '').replace(/[&<>"']/g, (c) => ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#039;' }[c]));
 const safeHref = (value) => /^(javascript|data|vbscript):/i.test(String(value ?? '').trim()) ? '#' : esc(value);
@@ -15,6 +15,28 @@ const labels = { inbox:'待推进', ready:'可领取', claimed:'已领取', bloc
 const priorities = { urgent:'紧急', high:'高', normal:'普通', low:'低' };
 const columns = ['inbox','ready','claimed','blocked','done'];
 const resourceKinds = { requirement:'需求文档', bug:'Bug 单', acceptance_doc:'验收文档', acceptance_artifact:'验收产物' };
+const verificationLabels = {pending:'验证未登记',verified:'验证完成',failed:'验证不通过',insufficient:'证据不足',invalidated:'验证已失效'};
+function verificationBadge(task) { const status = task.verification?.status || 'pending'; return `<span class="verification-badge verification-${esc(status)}">${esc(verificationLabels[status] || '验证状态未知')}</span>`; }
+function verificationPanel(task) {
+  const v = task.verification || {status:'pending'};
+  return `<section class="detail-card verification-panel"><div class="section-heading"><h3>交付后的验证</h3>${verificationBadge(task)}</div><p>已完成与验证完成分别记录。验证完成须先满足原逐项验收门槛，再核对实际结果并留下证据；旧 done 不自动登记新阶段；保留历史逐项验收事实。</p>${v.at ? `<div class="verification-record"><strong>${esc(v.reviewer)} · ${formatDate(v.at)}</strong><p>${esc(v.evidence)}</p>${v.reason ? `<p class="danger-text">${esc(v.reason)}${v.invalidatedAt ? ` · ${formatDate(v.invalidatedAt)}` : ''}</p>` : ''}<small>以上为署名验证记录，证据仍需审阅；历史保留历次结果。</small></div>` : '<p>未记录独立验证阶段；已有逐项验收与历史记录仍保留。</p>'}<form id="verification-form" class="verification-form"><input type="hidden" name="basis" value="${esc(task.verificationBasis)}"><div class="form-grid"><label>验证结论<select name="status"><option value="verified">验证完成</option><option value="failed">验证不通过</option><option value="insufficient">证据不足</option><option value="pending">退回验证未登记</option></select></label><label>验证人<input name="reviewer" required maxlength="200" placeholder="填写实际核对人或执行方署名"></label></div><label>实际证据 / 原因<textarea name="evidence" required maxlength="4000" rows="3" placeholder="填写实际验证结果、报告/截图入口；失败或不足时说明缺口"></textarea></label><small>${task.status === 'done' ? '验证不通过或证据不足时，保留完成历史并移出验证完成数；需要返工可用上方编辑改为已阻塞。' : '当前尚未完成：先逐项验收并正常完成任务；可退回验证未登记。'} 更改交付结果或验收依据会使旧验证失效；一般说明、标签和续租更新不影响验证。</small><p id="verification-feedback" role="status"></p><button class="primary" type="submit">保存验证记录</button></form></section>`;
+}
+async function submitVerification(e) {
+  e.preventDefault(); const form = e.currentTarget; const fields = new FormData(form);
+  const button = form.querySelector('button[type="submit"]'); button.disabled = true;
+  try {
+    state.currentTask = await api(`/api/tasks/${state.currentTask.id}/verification`, {method:'POST', body:JSON.stringify({status:fields.get('status'),reviewer:fields.get('reviewer'),evidence:fields.get('evidence'),expectedBasis:fields.get('basis')})});
+    await refresh(); toast('验证记录已保存', verificationLabels[state.currentTask.verification.status]);
+  } catch (error) { const feedback = document.querySelector('#verification-feedback'); if (feedback) { feedback.className = 'danger-text'; feedback.textContent = error.message; } }
+  finally { button.disabled = false; }
+}
+function renderProgressOverview(list) {
+  const at = Date.parse(state.sourceAt); const global = population();
+  const m = taskMetrics(list, at); const g = taskMetrics(global, at);
+  const ratio = count => m.total ? `${(100 * count / m.total).toFixed(1)}%` : '0.0%';
+  const metrics = [['total','任务总数',m.total],['done','已完成',m.done],['claimed','有效领取',m.claimed],['verified','验证完成 · 新阶段',m.verified]];
+  $('#progress-overview').innerHTML = `<div class="overview-heading"><div><div class="eyebrow">PROGRESS / 当前筛选</div><h2>任务进度概览</h2></div><small>来源 ${formatDate(state.sourceAt)}</small></div><div class="overview-grid"><div class="completion-donut" style="--completion:${m.total ? m.done/m.total*100 : 0}%" role="img" aria-label="已完成 ${m.done} / ${m.total}，${ratio(m.done)}"><div><strong>${ratio(m.done)}</strong><span>完成比例</span></div></div><div class="overview-metrics">${metrics.map(([key,label,value])=>`<div class="overview-metric metric-${key}" data-metric="${key}"><span>${label}</span><strong>${value}</strong><div class="metric-track" aria-hidden="true"><i style="width:${m.total ? value/m.total*100 : 0}%"></i></div><small>${key === 'total' ? `主 ${m.main} / 子 ${m.child}` : `${ratio(value)} · 占当前总数`}</small></div>`).join('')}</div></div><p class="overview-execution">有效领取 ${m.claimed} 项中：本轮已报告进展 ${m.reported} 项 · 尚无本轮报告 ${m.unknown} 项。租约和进展报告均不代表进程此刻正在运行。</p><div class="overview-global">全局（${state.requiredTag ? `实例 #${esc(state.requiredTag)}` : '当前实例授权范围'}）：共 ${g.total} · 已完成 ${g.done} · 有效领取 ${g.claimed} · 验证完成 ${g.verified}（主 ${g.main} / 子 ${g.child}）</div><small class="overview-footnote">主、子任务各计一项；容器按自身状态计数。验证完成是已完成的子集，不能相加。仅统计当前任务库；历史归档${state.includeArchives ? '已包含' : `已排除 ${state.tasks.filter(isArchivedTask).length} 项`}（按归档标签识别）；测试任务${state.includeTests ? '已包含' : `已排除 ${state.tasks.filter(isTestTask).length} 项`}。</small><details class="metric-details"><summary>查看统计口径与任务明细（${list.length} 项）</summary><p>当前筛选同时使用标签、人员、优先级、搜索、日期及验证阶段；各条件按任务自身字段匹配。全局忽略这些筛选，沿用相同测试/归档开关和实例授权范围。有效领取以本次快照时间的未过期租约为准。原 status 保留，验证阶段单独列出。</p><div class="metrics-table-wrap"><table><caption>当前筛选 · 来源 ${formatDate(state.sourceAt)}</caption><thead><tr><th>原任务</th><th>类型</th><th>原状态</th><th>验证阶段</th><th>本轮报告</th></tr></thead><tbody>${list.length ? list.map(t=>`<tr><td><button class="inline-task-link" data-open-task="${esc(t.id)}">${esc(t.title)}</button><small>${esc(t.id)}</small></td><td>${t.parentTaskId ? '子任务' : '主任务'}</td><td>${esc(labels[t.status] || t.status)}</td><td>${verificationBadge(t)}</td><td>${isClaimed(t) ? (t.latestReport?.type === 'progress' ? `已报告 ${t.latestReport.progress ?? '未知'}%` : '尚无本轮报告') : '无有效领取'}</td></tr>`).join('') : '<tr><td colspan="5">当前筛选没有任务</td></tr>'}</tbody></table></div></details>`;
+}
 
 async function api(path, options) { const res = await fetch(path, { cache:'no-store', signal:AbortSignal.timeout(10000), headers: { 'content-type': 'application/json' }, ...options }); const data = await res.json(); if (!res.ok) throw new Error(data.error || '请求失败'); return data; }
 function scopedPath(path, includePerson = true) { const url = new URL(path, location.origin); if (state.scopeTag) url.searchParams.set('tag', state.scopeTag); if (includePerson && state.scopePerson) url.searchParams.set('person', state.scopePerson); return `${url.pathname}${url.search}${url.hash}`; }
@@ -24,10 +46,11 @@ function toast(title, message = '') { const el = document.createElement('div'); 
 function formatDate(value, withTime = true) { if (!value) return '无 deadline'; const d = new Date(value); return d.toLocaleString('zh-CN', { month:'short', day:'numeric', ...(withTime ? { hour:'2-digit', minute:'2-digit', second:'2-digit' } : {}) }); }
 function isOverdue(t) { return t.deadline && Date.parse(t.deadline) < Date.now() && !['done','cancelled'].includes(t.status); }
 function searchableText(t) { return `${t.id} ${t.title} ${t.description} ${(t.tags || []).join(' ')} ${(t.people || []).join(' ')} ${t.projectSlug} ${(t.resources || []).map(x => `${x.title} ${x.url} ${x.note}`).join(' ')}`.toLowerCase(); }
-function isClaimed(t) { return t.status === 'claimed' && t.claim && Date.parse(t.claim.leaseUntil) > Date.now(); }
+function isClaimed(t) { return validClaim(t, Date.parse(state.sourceAt)); }
+function population() { return state.tasks.filter(t => (state.includeTests || !isTestTask(t)) && (state.includeArchives || !isArchivedTask(t))); }
 function inScope(t) { return (!state.scopeTag || (t.tags || []).some(tag => tag.toLowerCase() === state.scopeTag)) && (!state.scopePerson || (t.people || []).some(person => person.toLowerCase() === state.scopePerson)); }
 function visibleTasks() {
-  let list = state.tasks.filter(inScope);
+  let list = population().filter(inScope).filter(t => metricMatch(t, state.metric, Date.parse(state.sourceAt)));
   const q = $('#search').value.trim().toLowerCase();
   const p = $('#priority-filter').value;
   if (q) list = list.filter(t => searchableText(t).includes(q));
@@ -47,7 +70,7 @@ function agentMeta(t) {
 function taskId(t) { return `<div class="task-id" title="${esc(t.id)}">ID · ${esc(t.id)}</div>`; }
 function readyConflictMarkup(t) { return hasReadyConflict(t) ? `<div class="ready-conflict"><strong>状态需核对 · ready 仍有阻塞说明</strong><span>${esc(t.blockedReason)}</span><small>领取前请核对原详情；此处未解除阻塞或确认依赖。</small></div>` : ''; }
 function renderReadyQueue(list) {
-  const queue = readyChildQueue(state.tasks, list);
+  const queue = readyChildQueue(population(), list);
   $('#ready-count').textContent = queue.selected.length;
   $('#ready-subtitle').textContent = `当前筛选 ${queue.selected.length} 项 · 全局 ${queue.globalCount} 项 · 筛选外 ${queue.outsideCount} 项${queue.conflictCount ? `；其中 ${queue.conflictCount} 项状态需核对` : ''}。`;
   $('#show-all-ready').classList.toggle('hidden', queue.outsideCount === 0);
@@ -74,17 +97,18 @@ function childSummary(parent, matched) {
 function card(t, matched = new Set()) {
   const overdue = isOverdue(t);
   const context = !matched.has(t.id);
-  return `<article class="task-card" data-id="${esc(t.id)}" tabindex="0" aria-label="查看${esc(t.title)}"><div class="task-top"><div>${context ? '<small class="context-label">关联主任务 · 本身不匹配筛选</small>' : ''}<div class="task-title">${esc(t.title)}</div>${taskId(t)}</div><span class="priority priority-${t.priority}">${(t.tags || []).find(tag => /^p[01]$/i.test(tag))?.toUpperCase() || priorities[t.priority]}</span></div>${directionNote(t, state.tasks) ? `<p class="direction-note">${esc(directionNote(t, state.tasks))}</p>` : ''}${t.description ? `<div class="task-desc">${esc(t.description)}</div>` : ''}<div class="task-meta">${t.deadline ? `<span class="deadline ${overdue ? 'overdue' : ''}">◷ ${formatDate(t.deadline)}</span>` : ''}${t.projectSlug ? `<span class="tag">${esc(t.projectSlug)}</span>` : ''}${(t.people || []).map(x => `<span class="person-tag">👤 ${esc(x)}</span>`).join('')}${(t.tags || []).slice(0,2).map(x => `<span class="tag">#${esc(x)}</span>`).join('')}${agentMeta(t)}</div>${t.claim || t.latestReport ? progressMarkup(t) : ''}${childSummary(t, matched)}</article>`;
+  return `<article class="task-card" data-id="${esc(t.id)}" tabindex="0" aria-label="查看${esc(t.title)}"><div class="task-top"><div>${context ? '<small class="context-label">关联主任务 · 本身不匹配筛选</small>' : ''}<div class="task-title">${esc(t.title)}</div>${taskId(t)}</div><span class="priority priority-${t.priority}">${(t.tags || []).find(tag => /^p[01]$/i.test(tag))?.toUpperCase() || priorities[t.priority]}</span></div>${directionNote(t, state.tasks) ? `<p class="direction-note">${esc(directionNote(t, state.tasks))}</p>` : ''}${t.description ? `<div class="task-desc">${esc(t.description)}</div>` : ''}<div class="task-meta">${t.deadline ? `<span class="deadline ${overdue ? 'overdue' : ''}">◷ ${formatDate(t.deadline)}</span>` : ''}${t.projectSlug ? `<span class="tag">${esc(t.projectSlug)}</span>` : ''}${(t.people || []).map(x => `<span class="person-tag">👤 ${esc(x)}</span>`).join('')}${(t.tags || []).slice(0,2).map(x => `<span class="tag">#${esc(x)}</span>`).join('')}${agentMeta(t)}${verificationBadge(t)}</div>${t.claim || t.latestReport ? progressMarkup(t) : ''}${childSummary(t, matched)}</article>`;
 }
 function renderOverview(list) {
-  const global = state.tasks; const claimed = global.filter(isClaimed); const selectedClaims = list.filter(isClaimed);
+  const global = population(); const claimed = global.filter(isClaimed); const selectedClaims = list.filter(isClaimed);
   const mainCount = items => items.filter(t => !t.parentTaskId).length;
   $('#stat-ready').textContent = readyChildQueue(global, list).selected.length;
   $('#stat-overdue').textContent = list.filter(isOverdue).length;
   $('#stat-claimed').textContent = selectedClaims.length;
   $('#stat-today').textContent = list.filter(t => !['done','cancelled'].includes(t.status) && t.deadline && new Date(t.deadline).toDateString() === new Date().toDateString()).length;
   $('#nav-count').textContent = list.length;
-  const filters = [state.scopeTag ? `标签 #${state.scopeTag}` : '所有标签', state.scopePerson ? `人员 ${state.scopePerson}` : '所有人员', $('#priority-filter').selectedOptions[0].textContent, $('#search').value.trim() ? `搜索“${$('#search').value.trim()}”` : '', ['overdue','today'].includes(state.filter) ? (state.filter === 'overdue' ? '已逾期' : '今天截止') : ''].filter(Boolean).join(' · ');
+  renderProgressOverview(list);
+  const filters = [state.metric ? $('#metric-filter').selectedOptions[0].textContent : '', state.scopeTag ? `标签 #${state.scopeTag}` : '所有标签', state.scopePerson ? `人员 ${state.scopePerson}` : '所有人员', $('#priority-filter').selectedOptions[0].textContent, $('#search').value.trim() ? `搜索“${$('#search').value.trim()}”` : '', ['overdue','today'].includes(state.filter) ? (state.filter === 'overdue' ? '已逾期' : '今天截止') : ''].filter(Boolean).join(' · ');
   $('#scope-summary').innerHTML = `<strong>当前筛选 · ${esc(filters)}</strong><span>主任务 ${mainCount(list)} · 子任务 ${list.length-mainCount(list)} · 有效领取 ${selectedClaims.length}（主 ${mainCount(selectedClaims)} / 子 ${selectedClaims.length-mainCount(selectedClaims)}）</span><span>全局${state.requiredTag ? `（实例 #${esc(state.requiredTag)}）` : '（当前实例授权范围）'}：主任务 ${mainCount(global)} · 子任务 ${global.length-mainCount(global)} · 有效领取 ${claimed.length}（主 ${mainCount(claimed)} / 子 ${claimed.length-mainCount(claimed)}）</span>`;
   $('#claims-subtitle').textContent = `当前筛选 ${selectedClaims.length} 项 · 筛选外 ${claimed.length-selectedClaims.length} 项；领取与进展报告不代表实时执行探测。`;
   $('#show-all-claims').classList.toggle('hidden', claimed.length === selectedClaims.length);
@@ -111,13 +135,13 @@ function renderScope() {
 }
 function renderTagOptions() {
   const options = state.tags.map(({ tag, count }) => `<option value="${esc(tag)}">#${esc(tag)}（${count}）</option>`).join('');
-  const missing = state.scopeTag && !state.tags.some(item => item.tag === state.scopeTag) ? `<option value="${esc(state.scopeTag)}">#${esc(state.scopeTag)}（0）</option>` : '';
+  const missing = state.scopeTag && !state.tags.some(item => item.tag === state.scopeTag) ? `<option value="${esc(state.scopeTag)}">#${esc(state.scopeTag)}（${state.available ? 0 : '数量未知'}）</option>` : '';
   $('#tag-filter').innerHTML = `<option value="">所有标签</option>${missing}${options}`;
   $('#tag-filter').value = state.scopeTag;
 }
 function renderPeopleOptions() {
   const options = state.people.map(({ person, count }) => `<option value="${esc(person.toLowerCase())}">${esc(person)}（${count}）</option>`).join('');
-  const missing = state.scopePerson && !state.people.some(item => item.person.toLowerCase() === state.scopePerson) ? `<option value="${esc(state.scopePerson)}">${esc(state.scopePerson)}（0）</option>` : '';
+  const missing = state.scopePerson && !state.people.some(item => item.person.toLowerCase() === state.scopePerson) ? `<option value="${esc(state.scopePerson)}">${esc(state.scopePerson)}（${state.available ? 0 : '数量未知'}）</option>` : '';
   $('#person-filter').innerHTML = `<option value="">所有人员</option>${missing}${options}`;
   $('#person-filter').value = state.scopePerson;
 }
@@ -143,11 +167,12 @@ function render() {
       const latest = t => Math.max(Date.parse(t.updatedAt), ...list.filter(child => child.parentTaskId === t.id).map(child => Date.parse(child.updatedAt)));
       return latest(b)-latest(a);
     }).slice(0,3);
-    state.tags = [...new Set(state.tasks.filter(t => !state.scopePerson || (t.people || []).some(p => p.toLowerCase() === state.scopePerson)).flatMap(t => t.tags || []).map(t => t.toLowerCase()))].map(tag => ({tag,count:state.tasks.filter(t => (t.tags || []).some(x => x.toLowerCase() === tag) && (!state.scopePerson || (t.people || []).some(p => p.toLowerCase() === state.scopePerson))).length})).sort((a,b) => b.count-a.count || a.tag.localeCompare(b.tag));
-    const scoped = state.tasks.filter(t => !state.scopeTag || (t.tags || []).some(tag => tag.toLowerCase() === state.scopeTag));
+    state.tags = [...new Set(population().filter(t => !state.scopePerson || (t.people || []).some(p => p.toLowerCase() === state.scopePerson)).flatMap(t => t.tags || []).map(t => t.toLowerCase()))].map(tag => ({tag,count:population().filter(t => (t.tags || []).some(x => x.toLowerCase() === tag) && (!state.scopePerson || (t.people || []).some(p => p.toLowerCase() === state.scopePerson))).length})).sort((a,b) => b.count-a.count || a.tag.localeCompare(b.tag));
+    const scoped = population().filter(t => !state.scopeTag || (t.tags || []).some(tag => tag.toLowerCase() === state.scopeTag));
     state.people = [...new Set(scoped.flatMap(t => t.people || []).map(p => p.toLowerCase()))].map(person => ({person,count:scoped.filter(t => (t.people || []).some(p => p.toLowerCase() === person)).length})).sort((a,b) => b.count-a.count || a.person.localeCompare(b.person));
   } else {
     ['stat-ready','stat-overdue','stat-claimed','stat-today','nav-count'].forEach(id => $('#'+id).textContent = '—');
+    $('#progress-overview').innerHTML = '<p class="danger-text">任务概览不可用；旧图表与统计已隐藏。请刷新重试。</p>';
     $('#scope-summary').textContent = '当前筛选与全局统计不可用';
     $('#claims-subtitle').textContent = '来源不可用，不能判断当前领取。';
     $('#show-all-claims').classList.add('hidden');
@@ -156,7 +181,7 @@ function render() {
     $('#show-all-ready').classList.add('hidden'); $('#toggle-ready').classList.add('hidden');
     $('#ready-tasks').innerHTML = '<div class="empty">任务来源不可用；旧成功结果已隐藏</div>';
     $('#active-claims').innerHTML = $('#board').innerHTML = $('#timeline').innerHTML = '<div class="empty">任务来源不可用；旧成功结果已隐藏</div>';
-    state.recent = [];
+    state.recent = []; state.tags = []; state.people = [];
   }
   $('#board-view').classList.toggle('hidden', state.view !== 'board'); $('#timeline-view').classList.toggle('hidden', state.view !== 'timeline'); $('#task-detail-view').classList.toggle('hidden', state.view !== 'detail');
   if (state.view === 'detail') { if (state.available) renderDetail(); else $('#detail-content').innerHTML = '<div class="empty">任务来源不可用，请刷新后核对详情。</div>'; }
@@ -200,7 +225,8 @@ function taskLink(task, label = task.title) { return `<button class="inline-task
 function renderDetail() {
   const task = state.currentTask; if (!task) { $('#detail-content').innerHTML = '<div class="empty">选择一个主任务查看详情</div>'; return; }
   const isMain = task.isMainTask ?? !task.parentTaskId; const overdue = isOverdue(task); const parentBlock = task.parentTask ? `<div class="task-relation"><span>所属主任务</span>${taskLink(task.parentTask)}</div>` : ''; const mainBlock = task.mainTask ? `<div class="task-relation"><span>主任务</span>${taskLink(task.mainTask)}</div>` : '';
-  $('#detail-content').innerHTML = `<div class="detail-head"><div><div class="eyebrow">${isMain ? 'MAIN TASK' : 'SUBTASK'} / ${esc(task.id)}</div><h2>${esc(task.title)}</h2><div class="detail-badges"><span class="status-badge status-${task.status}">${labels[task.status]}</span><span class="priority priority-${task.priority}">${priorities[task.priority]}</span>${(task.people || []).map(person => `<span class="person-tag">👤 ${esc(person)}</span>`).join('')}${task.deadline ? `<span class="deadline ${overdue ? 'overdue' : ''}">◷ ${overdue ? '已逾期 · ' : ''}${formatDate(task.deadline)}</span>` : ''}</div></div><div class="detail-actions"><button class="ghost" id="edit-current">编辑</button>${isMain ? `<button class="primary" id="add-subtask">＋ 子任务</button>` : ''}</div></div><div class="detail-grid"><div class="detail-main"><section class="detail-card description-card"><div class="section-kicker">任务说明</div>${directionNote(task, state.tasks) ? `<p class="direction-note">${esc(directionNote(task, state.tasks))}</p>` : ''}${readyConflictMarkup(task)}<p>${task.description ? esc(task.description) : '暂无任务描述。'}</p>${parentBlock}${mainBlock}${task.result ? `<div class="result-block"><strong>交付结果</strong><p>${esc(task.result)}</p></div>` : ''}</section>${acceptancePanel(task)}${isMain ? `<section class="detail-card"><div class="section-heading"><div><div class="section-kicker">任务拆解</div><h3>子任务 <span>${task.subtasks?.length || 0}</span></h3></div><button class="ghost" id="add-subtask-inline">＋ 添加子任务</button></div>${task.subtasks?.length ? `<div class="subtask-list">${task.subtasks.map(child => `<button class="subtask-row" data-task-id="${esc(child.id)}"><span class="subtask-status status-${child.status}"></span><span class="subtask-title">${esc(child.title)}</span><span>${labels[child.status]}</span><b>${child.latestReport?.progress === undefined ? '无进度报告' : `已记录 ${child.latestReport.progress}%`}</b></button>`).join('')}</div>` : '<div class="empty compact">还没有子任务，可以把执行步骤拆开交给不同 Agent。</div>'}</section>` : ''}<section class="detail-card"><div class="section-heading"><div><div class="section-kicker">关联资料</div><h3>需求、Bug 与验收证据</h3></div><span class="section-hint">Agent 读取 / claim 时同步获得</span></div><div class="resource-groups">${Object.keys(resourceKinds).map(kind => resourceGroup(task, kind)).join('')}</div></section></div><aside class="detail-side"><section class="detail-card agent-card"><div class="section-kicker">Agent 协作状态</div>${agentPanel(task)}<div class="agent-context-note">people 是人工协作者；claim 是当前唯一的 Agent 租约。详情接口会同时返回两者。</div></section><section class="detail-card"><div class="section-heading"><div><div class="section-kicker">Activity</div><h3>任务历史</h3></div></div>${historyMarkup(task)}</section></aside></div>`;
+  $('#detail-content').innerHTML = `<div class="detail-head"><div><div class="eyebrow">${isMain ? 'MAIN TASK' : 'SUBTASK'} / ${esc(task.id)}</div><h2>${esc(task.title)}</h2><div class="detail-badges"><span class="status-badge status-${task.status}">${labels[task.status]}</span>${verificationBadge(task)}<span class="priority priority-${task.priority}">${priorities[task.priority]}</span>${(task.people || []).map(person => `<span class="person-tag">👤 ${esc(person)}</span>`).join('')}${task.deadline ? `<span class="deadline ${overdue ? 'overdue' : ''}">◷ ${overdue ? '已逾期 · ' : ''}${formatDate(task.deadline)}</span>` : ''}</div></div><div class="detail-actions"><button class="ghost" id="edit-current">编辑</button>${isMain ? `<button class="primary" id="add-subtask">＋ 子任务</button>` : ''}</div></div><div class="detail-grid"><div class="detail-main"><section class="detail-card description-card"><div class="section-kicker">任务说明</div>${directionNote(task, state.tasks) ? `<p class="direction-note">${esc(directionNote(task, state.tasks))}</p>` : ''}${readyConflictMarkup(task)}<p>${task.description ? esc(task.description) : '暂无任务描述。'}</p>${parentBlock}${mainBlock}${task.result ? `<div class="result-block"><strong>交付结果</strong><p>${esc(task.result)}</p></div>` : ''}</section>${acceptancePanel(task)}${verificationPanel(task)}${isMain ? `<section class="detail-card"><div class="section-heading"><div><div class="section-kicker">任务拆解</div><h3>子任务 <span>${task.subtasks?.length || 0}</span></h3></div><button class="ghost" id="add-subtask-inline">＋ 添加子任务</button></div>${task.subtasks?.length ? `<div class="subtask-list">${task.subtasks.map(child => `<button class="subtask-row" data-task-id="${esc(child.id)}"><span class="subtask-status status-${child.status}"></span><span class="subtask-title">${esc(child.title)}</span><span>${labels[child.status]} · ${verificationLabels[child.verification?.status || 'pending']}</span><b>${child.latestReport?.progress === undefined ? '无进度报告' : `已记录 ${child.latestReport.progress}%`}</b></button>`).join('')}</div>` : '<div class="empty compact">还没有子任务，可以把执行步骤拆开交给不同 Agent。</div>'}</section>` : ''}<section class="detail-card"><div class="section-heading"><div><div class="section-kicker">关联资料</div><h3>需求、Bug 与验收证据</h3></div><span class="section-hint">Agent 读取 / claim 时同步获得</span></div><div class="resource-groups">${Object.keys(resourceKinds).map(kind => resourceGroup(task, kind)).join('')}</div></section></div><aside class="detail-side"><section class="detail-card agent-card"><div class="section-kicker">Agent 协作状态</div>${agentPanel(task)}<div class="agent-context-note">people 是人工协作者；claim 是当前唯一的 Agent 租约。详情接口会同时返回两者。</div></section><section class="detail-card"><div class="section-heading"><div><div class="section-kicker">Activity</div><h3>任务历史</h3></div></div>${historyMarkup(task)}</section></aside></div>`;
+  $('#verification-form').onsubmit = submitVerification;
   $('#edit-current').onclick = () => openEdit(task.id); if (isMain) { $('#add-subtask').onclick = () => openNew(task.id); $('#add-subtask-inline').onclick = () => openNew(task.id); } document.querySelectorAll('[data-task-id]').forEach(el => el.addEventListener('click', () => void openDetail(el.dataset.taskId))); document.querySelectorAll('[data-remove-resource]').forEach(el => el.addEventListener('click', () => void removeResource(el.dataset.removeResource))); document.querySelectorAll('.resource-form').forEach(form => form.addEventListener('submit', (e) => void addResource(e, form.dataset.resourceKind)));
 }
 async function addResource(e, kind) { e.preventDefault(); const form = e.currentTarget; const data = new FormData(form); try { const saved = await api(`/api/tasks/${state.currentTask.id}/resources`, { method:'POST', body: JSON.stringify({ kind, title:data.get('title'), url:data.get('url'), note:data.get('note'), actorId:'human' }) }); state.currentTask = saved; form.reset(); await refresh(); toast('资料已关联', resourceKinds[kind]); } catch (e) { toast('关联失败', e.message); } }
@@ -220,7 +246,7 @@ void refresh();
 
 function showAllTasks() {
   state.scopeTag = ''; state.scopePerson = ''; state.filter = 'all';
-  state.readyExpanded = false;
+  state.readyExpanded = false; state.metric = ''; $('#metric-filter').value = '';
   $('#priority-filter').value = ''; $('#search').value = '';
   const url = new URL(location.href); url.searchParams.delete('tag'); url.searchParams.delete('person'); url.hash = '';
   history.replaceState(null, '', `${url.pathname}${url.search}`); render();
@@ -228,3 +254,8 @@ function showAllTasks() {
 $('#show-all-claims').onclick = showAllTasks;
 $('#show-all-ready').onclick = showAllTasks;
 $('#toggle-ready').onclick = () => { state.readyExpanded = !state.readyExpanded; render(); };
+
+$('#metric-filter').onchange = () => { state.metric = $('#metric-filter').value; render(); };
+$('#include-tests').onchange = () => { state.includeTests = $('#include-tests').checked; render(); };
+
+$('#include-archives').onchange = () => { state.includeArchives = $('#include-archives').checked; render(); };
