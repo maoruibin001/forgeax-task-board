@@ -13,7 +13,7 @@ const esc = (v) => String(v ?? '').replace(/[&<>"']/g, (c) => ({ '&':'&amp;','<'
 const safeHref = (value) => /^(javascript|data|vbscript):/i.test(String(value ?? '').trim()) ? '#' : esc(value);
 const labels = { inbox:'待推进', ready:'可领取', claimed:'已领取', blocked:'已阻塞', done:'已完成', cancelled:'已取消' };
 const priorities = { urgent:'紧急', high:'高', normal:'普通', low:'低' };
-const columns = ['inbox','ready','claimed','blocked','done'];
+const columns = ['inbox','ready','claimed','blocked','done','cancelled'];
 const resourceKinds = { requirement:'需求文档', bug:'Bug 单', acceptance_doc:'验收文档', acceptance_artifact:'验收产物' };
 const verificationLabels = {pending:'验证未登记',verified:'验证完成',failed:'验证不通过',insufficient:'证据不足',invalidated:'验证已失效'};
 function verificationBadge(task) { const status = task.verification?.status || 'pending'; return `<span class="verification-badge verification-${esc(status)}">${esc(verificationLabels[status] || '验证状态未知')}</span>`; }
@@ -71,14 +71,16 @@ function taskId(t) { return `<div class="task-id" title="${esc(t.id)}">ID · ${e
 function readyConflictMarkup(t) { return hasReadyConflict(t) ? `<div class="ready-conflict"><strong>状态需核对 · ready 仍有阻塞说明</strong><span>${esc(t.blockedReason)}</span><small>领取前请核对原详情；此处未解除阻塞或确认依赖。</small></div>` : ''; }
 function renderReadyQueue(list) {
   const queue = readyChildQueue(population(), list);
+  $('#ready-panel').classList.toggle('hidden', queue.selected.length === 0 && queue.outsideCount === 0);
+  $('#ready-panel').classList.toggle('compact-panel', queue.selected.length === 0);
   $('#ready-count').textContent = queue.selected.length;
   $('#ready-subtitle').textContent = `当前筛选 ${queue.selected.length} 项 · 全局 ${queue.globalCount} 项 · 筛选外 ${queue.outsideCount} 项${queue.conflictCount ? `；其中 ${queue.conflictCount} 项状态需核对` : ''}。`;
   $('#show-all-ready').classList.toggle('hidden', queue.outsideCount === 0);
   const shown = state.readyExpanded ? queue.selected : queue.selected.slice(0, 6);
-  $('#ready-tasks').innerHTML = shown.length ? shown.map(t => {
+  $('#ready-tasks').innerHTML = shown.map(t => {
     const parent = state.tasks.find(task => task.id === t.parentTaskId);
     return `<article class="ready-card" data-ready-id="${esc(t.id)}"><div class="task-top"><button class="claim-title" data-open-task="${esc(t.id)}">${esc(t.title)}</button><span class="priority priority-${t.priority}">${priorities[t.priority]}</span></div>${taskId(t)}<div class="claim-parent">父方向：${parent ? `<button class="inline-task-link" data-open-task="${esc(parent.id)}">${esc(parent.title)}</button> · ${labels[parent.status]}` : '不在实例授权范围'}</div><div class="task-meta"><span class="status-badge status-ready">原状态 ready</span>${(t.people || []).map(person => `<span class="person-tag">👤 ${esc(person)}</span>`).join('')}${(t.tags || []).map(tag => `<span class="tag">#${esc(tag)}</span>`).join('')}</div>${readyConflictMarkup(t)}${t.description ? `<details class="ready-description"><summary>原说明与依赖（原文）</summary><p>${esc(t.description)}</p></details>` : '<small class="ready-no-description">原任务未提供说明，请进入详情核对验收。</small>'}<button class="inline-task-link ready-detail" data-open-task="${esc(t.id)}">查看原子任务详情 →</button></article>`;
-  }).join('') : `<div class="empty">当前筛选没有 ready 子任务。${queue.outsideCount ? `全局另有 ${queue.outsideCount} 项，可查看全部可领取子任务。` : '全局也没有 ready 子任务。'}</div>`;
+  }).join('');
   $('#toggle-ready').classList.toggle('hidden', queue.selected.length <= 6);
   $('#toggle-ready').textContent = state.readyExpanded ? `收起清单（共 ${queue.selected.length} 项）` : `展开全部 ${queue.selected.length} 项（当前展示 ${shown.length} 项）`;
   $('#toggle-ready').setAttribute('aria-expanded', String(state.readyExpanded));
@@ -111,11 +113,14 @@ function renderOverview(list) {
   const filters = [state.metric ? $('#metric-filter').selectedOptions[0].textContent : '', state.scopeTag ? `标签 #${state.scopeTag}` : '所有标签', state.scopePerson ? `人员 ${state.scopePerson}` : '所有人员', $('#priority-filter').selectedOptions[0].textContent, $('#search').value.trim() ? `搜索“${$('#search').value.trim()}”` : '', ['overdue','today'].includes(state.filter) ? (state.filter === 'overdue' ? '已逾期' : '今天截止') : ''].filter(Boolean).join(' · ');
   $('#scope-summary').innerHTML = `<strong>当前筛选 · ${esc(filters)}</strong><span>主任务 ${mainCount(list)} · 子任务 ${list.length-mainCount(list)} · 有效领取 ${selectedClaims.length}（主 ${mainCount(selectedClaims)} / 子 ${selectedClaims.length-mainCount(selectedClaims)}）</span><span>全局${state.requiredTag ? `（实例 #${esc(state.requiredTag)}）` : '（当前实例授权范围）'}：主任务 ${mainCount(global)} · 子任务 ${global.length-mainCount(global)} · 有效领取 ${claimed.length}（主 ${mainCount(claimed)} / 子 ${claimed.length-mainCount(claimed)}）</span>`;
   $('#claims-subtitle').textContent = `当前筛选 ${selectedClaims.length} 项 · 筛选外 ${claimed.length-selectedClaims.length} 项；领取与进展报告不代表实时执行探测。`;
+  $('#claims-count').textContent = selectedClaims.length;
+  $('#claims-panel').classList.toggle('hidden', selectedClaims.length === 0 && claimed.length === 0);
+  $('#claims-panel').classList.toggle('compact-panel', selectedClaims.length === 0);
   $('#show-all-claims').classList.toggle('hidden', claimed.length === selectedClaims.length);
-  $('#active-claims').innerHTML = selectedClaims.length ? selectedClaims.map(t => {
+  $('#active-claims').innerHTML = selectedClaims.map(t => {
     const parent = global.find(x => x.id === t.parentTaskId);
     return `<article class="claim-card"><button class="claim-title" data-open-task="${esc(t.id)}">${esc(t.title)}</button>${taskId(t)}<div class="task-meta"><span>${t.parentTaskId ? '子任务' : '主任务'}</span>${agentMeta(t)}</div>${t.parentTaskId ? `<div class="claim-parent">所属主任务：${parent ? `<button class="inline-task-link" data-open-task="${esc(parent.id)}">${esc(parent.title)}</button> · ${labels[parent.status]}` : '不在实例授权范围'}</div>` : ''}${progressMarkup(t)}</article>`;
-  }).join('') : `<div class="empty">当前筛选没有有效领取。${claimed.length ? `全局另有 ${claimed.length} 项领取，可查看全部领取。` : '全局也没有有效领取。'}</div>`;
+  }).join('');
 }
 function renderSource() {
   const available = state.available;
@@ -130,7 +135,7 @@ function renderRecent() { $('#recent-tasks').innerHTML = state.recent.length ? s
 function renderScope() {
   $('#page-title').textContent = state.scopeTag ? `#${state.scopeTag} 待办` : '任务中心';
   $('#page-subtitle').textContent = state.scopePerson ? `当前显示 ${state.scopePerson} 参与的任务。` : state.scopeTag ? `当前只显示并创建带 #${state.scopeTag} 标签的任务。` : '把重要的事交给自己，也交给 Agent。';
-  $('#board-subtitle').textContent = '方向容器按主单原状态分栏；可领取执行项见上方子任务队列，关联主卡不计入筛选数量。';
+  $('#board-subtitle').textContent = '有内容的主单状态各占一行；可领取执行项见上方子任务队列，关联主卡不计入筛选数量。';
   document.title = state.scopeTag ? `#${state.scopeTag} 待办 · ForgeaX` : 'Task Board · ForgeaX';
 }
 function renderTagOptions() {
@@ -154,7 +159,13 @@ function render() {
   if (state.available) {
     renderOverview(list);
     renderReadyQueue(list);
-    $('#board').innerHTML = columns.map(status => { const items = entries.filter(t => t.status === status); const label = status === 'inbox' ? '方向管理 · 待推进' : status === 'ready' ? '主单可领取' : labels[status]; return `<div class="column"><div class="column-head"><span class="dot ${status === 'claimed' ? 'urgent' : status === 'done' ? 'normal' : 'high'}"></span><strong>${label}</strong><b>${items.length}</b></div><div class="column-body">${items.length ? items.map(t => card(t, matched)).join('') : '<div class="empty">当前筛选没有主任务或关联主任务</div>'}</div></div>`; }).join('');
+    $('#board-heading').classList.toggle('hidden', list.length === 0);
+    $('#board').innerHTML = list.length ? columns.map(status => {
+      const items = entries.filter(t => t.status === status);
+      if (!items.length) return '';
+      const label = status === 'inbox' ? '方向管理 · 待推进' : status === 'ready' ? '主单可领取' : labels[status];
+      return `<section class="column" data-status="${status}" aria-label="${label}"><div class="column-head"><span class="dot ${status === 'claimed' ? 'urgent' : status === 'done' ? 'normal' : 'high'}"></span><strong>${label}</strong><b>${items.length}</b></div><div class="column-body">${items.map(t => card(t, matched)).join('')}</div></section>`;
+    }).join('') : '<div class="empty board-empty" role="status">当前筛选没有匹配任务，请调整筛选或搜索。</div>';
     document.querySelectorAll('.task-card').forEach(el => {
       el.addEventListener('click', e => { if (!e.target.closest('button')) void openDetail(el.dataset.id); });
       el.addEventListener('keydown', e => { if (e.target === el && ['Enter',' '].includes(e.key)) { e.preventDefault(); void openDetail(el.dataset.id); } });
@@ -174,6 +185,7 @@ function render() {
     ['stat-ready','stat-overdue','stat-claimed','stat-today','nav-count'].forEach(id => $('#'+id).textContent = '—');
     $('#progress-overview').innerHTML = '<p class="danger-text">任务概览不可用；旧图表与统计已隐藏。请刷新重试。</p>';
     $('#scope-summary').textContent = '当前筛选与全局统计不可用';
+    $('#ready-panel').classList.add('hidden'); $('#claims-panel').classList.add('hidden'); $('#board-heading').classList.add('hidden');
     $('#claims-subtitle').textContent = '来源不可用，不能判断当前领取。';
     $('#show-all-claims').classList.add('hidden');
     $('#ready-count').textContent = '—';
